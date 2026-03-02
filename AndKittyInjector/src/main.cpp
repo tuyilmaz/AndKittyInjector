@@ -89,6 +89,10 @@ int main(int argc, char *args[])
         .help("Remove soinfo and remap library to anonymouse memory.")
         .store_into(inj_cfg.hide);
 
+    program.add_argument("--hide_linklist")
+        .help("Remove lib from link_map list (getauxval).")
+        .store_into(inj_cfg.hide_linklist);
+
     try
     {
         program.parse_args(argc, args);
@@ -110,6 +114,7 @@ int main(int argc, char *args[])
     KITTY_LOGI("memfd: %d", inj_cfg.memfd ? 1 : 0);
     KITTY_LOGI("free: %d", inj_cfg.free);
     KITTY_LOGI("hide: %d", inj_cfg.hide ? 1 : 0);
+    KITTY_LOGI("hide_linklist: %d", inj_cfg.hide_linklist ? 1 : 0);
     for (size_t i = 0; i < libs.size(); i++)
     {
         KITTY_LOGI("lib[%d]: %s", int(i + 1), libs[i].c_str());
