@@ -56,13 +56,13 @@ struct inject_elf_info_t
 struct inject_elf_config_t
 {
     int sdk, rtdl_flags, delay;
-    bool watch, launch, seize, bp, memfd, free, hide;
+    bool watch, launch, seize, bp, memfd, free, hide, hide_linklist;
     std::string package;
     std::function<void(inject_elf_info_t &injected)> beforeEntryPoint, afterEntryPoint;
 
     inject_elf_config_t()
         : sdk(0), rtdl_flags(RTLD_LOCAL | RTLD_NOW), delay(0), watch(false), launch(false), seize(false), bp(false),
-          memfd(false), free(false), hide(false), beforeEntryPoint(nullptr), afterEntryPoint(nullptr)
+          memfd(false), free(false), hide(false), hide_linklist(false), beforeEntryPoint(nullptr), afterEntryPoint(nullptr)
     {
     }
 };
@@ -111,6 +111,7 @@ private:
 
     bool unloadLibrary(inject_elf_info_t &injected);
     bool hideLibrary(inject_elf_info_t &injected);
+    bool hideLinkList(inject_elf_info_t &injected);
 
     uintptr_t getJavaVM(inject_elf_info_t &injected);
     bool callEntryPoint(inject_elf_info_t &injected);

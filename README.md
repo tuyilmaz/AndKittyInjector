@@ -19,13 +19,14 @@ Inject from /data for Android
 - [x] Inject & Unload lib after entry point execution
 - [x] Hide lib segments from /maps
 - [x] Hide lib from native or emu linker solist ( dladdr & dl_iterate_phdr )
+- [x] Hide lib from link_map list ( getauxval )
 
 <h2> How to use: </h2>
 
 Make sure to chmod +x or 755
 
 ```text
-Usage: AndKittyInjector [--help] [--version] --package <name> --libs <paths>... [--launch] [--watch] [--bp] [--delay <micros>] [--memfd] [--free] [--hide]
+Usage: AndKittyInjector [--help] [--version] --package <name> --libs <paths>... [--launch] [--watch] [--bp] [--delay <micros>] [--memfd] [--free] [--hide] [--hide_linklist]
 
 Optional arguments:
   -h, --help        shows help message and exits 
@@ -39,6 +40,7 @@ Optional arguments:
   --memfd           Use memfd dlopen. 
   --free            Unload library after entry point execution. 
   --hide            Remove soinfo and remap library to anonymouse memory. 
+  --hide_linklist   Remove lib from link_map list (getauxval). 
 ```
 
 Example:

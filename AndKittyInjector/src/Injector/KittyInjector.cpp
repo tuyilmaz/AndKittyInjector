@@ -1,4 +1,5 @@
 #include "KittyInjector.hpp"
+#include <link.h>
 
 #define kUSE_STACK_BUFFER 1
 
@@ -461,6 +462,12 @@ inject_elf_info_t KittyInjector::inject(const std::string &elfPath)
                 cleanUp();
                 return {};
             }
+        }
+
+        if (_cfg.hide_linklist)
+        {
+            if (!hideLinkList(injected))
+                KITTY_LOGW("Injector: Failed to remove lib from link_map list.");
         }
 
         if (_cfg.beforeEntryPoint)
@@ -1053,6 +1060,156 @@ bool KittyInjector::hideLibrary(inject_elf_info_t &injected)
                (void *)(injected.elf.end()));
 
     return true;
+}
+
+bool KittyInjector::hideLinkList(inject_elf_info_t &injected)
+{
+    KITTY_LOGI("Injector: Trying to remove elf(%p) from link_map list...", (void *)injected.elf.base());
+
+    if (!_kMgr || !_kMgr->isMemValid())
+    {
+        KITTY_LOGE("hideLinkList: KittyMemoryMgr is not valid.");
+        return false;
+    }
+
+    ElfScanner exe_elf = _kMgr->elfScanner.getProgramElf();
+    if (!exe_elf.isValid())
+    {
+        KITTY_LOGE("hideLinkList: Failed to find remote executable ELF.");
+        return false;
+    }
+
+    KT_ElfW(Ehdr) ehdr{};
+    _kMgr->readMem(exe_elf.base(), &ehdr, sizeof(ehdr));
+
+    uintptr_t dynamic_addr = 0;
+    size_t dynamic_size = 0;
+    for (int i = 0; i < ehdr.e_phnum; i++)
+    {
+        KT_ElfW(Phdr) phdr{};
+        _kMgr->readMem(exe_elf.base() + ehdr.e_phoff + (i * sizeof(KT_ElfW(Phdr))), &phdr, sizeof(phdr));
+        if (phdr.p_type == PT_DYNAMIC)
+        {
+            dynamic_addr = exe_elf.base() + phdr.p_vaddr;
+            dynamic_size = phdr.p_memsz;
+            break;
+        }
+    }
+
+    if (!dynamic_addr)
+    {
+        KITTY_LOGE("hideLinkList: Failed to find PT_DYNAMIC in remote executable.");
+        return false;
+    }
+
+    uintptr_t r_debug_addr = 0;
+    for (size_t off = 0; off < dynamic_size; off += sizeof(KT_ElfW(Dyn)))
+    {
+        KT_ElfW(Dyn) dyn{};
+        _kMgr->readMem(dynamic_addr + off, &dyn, sizeof(dyn));
+        if (dyn.d_tag == DT_NULL)
+            break;
+        if (dyn.d_tag == DT_DEBUG)
+        {
+            r_debug_addr = (uintptr_t)dyn.d_un.d_ptr;
+            break;
+        }
+    }
+
+    if (!r_debug_addr)
+    {
+        KITTY_LOGE("hideLinkList: Failed to find DT_DEBUG / _r_debug.");
+        return false;
+    }
+
+    KITTY_LOGI("hideLinkList: _r_debug = %p.", (void *)r_debug_addr);
+
+    struct r_debug r_dbg{};
+    _kMgr->readMem(r_debug_addr, &r_dbg, sizeof(r_dbg));
+
+    if (r_dbg.r_version < 1)
+    {
+        KITTY_LOGE("hideLinkList: _r_debug not initialized yet (r_version=%d).", r_dbg.r_version);
+        return false;
+    }
+
+    if (r_dbg.r_state != r_debug::RT_CONSISTENT)
+    {
+        KITTY_LOGE("hideLinkList: _r_debug state is not RT_CONSISTENT (r_state=%d), link_map is being modified.",
+                   r_dbg.r_state);
+        return false;
+    }
+
+    uintptr_t r_map_ptr = (uintptr_t)r_dbg.r_map;
+    if (!r_map_ptr)
+    {
+        KITTY_LOGE("hideLinkList: _r_debug->r_map is NULL.");
+        return false;
+    }
+
+    KITTY_LOGI("hideLinkList: link_map head = %p.", (void *)r_map_ptr);
+
+    constexpr size_t lm_addr_off = offsetof(struct link_map, l_addr);
+    constexpr size_t lm_next_off = offsetof(struct link_map, l_next);
+    constexpr size_t lm_prev_off = offsetof(struct link_map, l_prev);
+
+    uintptr_t trav = r_map_ptr;
+    while (trav)
+    {
+        uintptr_t l_addr = 0;
+        _kMgr->readMem(trav + lm_addr_off, &l_addr, sizeof(uintptr_t));
+
+        if (l_addr == injected.elf.base())
+        {
+            uintptr_t l_next = 0, l_prev = 0;
+            _kMgr->readMem(trav + lm_next_off, &l_next, sizeof(uintptr_t));
+            _kMgr->readMem(trav + lm_prev_off, &l_prev, sizeof(uintptr_t));
+
+            KITTY_LOGI("hideLinkList: Found link_map(%p) for elf(%p). prev=%p, next=%p.",
+                       (void *)trav,
+                       (void *)injected.elf.base(),
+                       (void *)l_prev,
+                       (void *)l_next);
+
+            if (l_prev)
+            {
+                if (!_kMgr->memPatch.createWithBytes(l_prev + lm_next_off, &l_next, sizeof(uintptr_t)).Modify())
+                {
+                    KITTY_LOGE("hideLinkList: Failed to update prev->l_next.");
+                    return false;
+                }
+            }
+            else
+            {
+                if (!_kMgr->memPatch
+                         .createWithBytes(r_debug_addr + offsetof(struct r_debug, r_map),
+                                          &l_next,
+                                          sizeof(uintptr_t))
+                         .Modify())
+                {
+                    KITTY_LOGE("hideLinkList: Failed to update _r_debug->r_map.");
+                    return false;
+                }
+            }
+
+            if (l_next)
+            {
+                if (!_kMgr->memPatch.createWithBytes(l_next + lm_prev_off, &l_prev, sizeof(uintptr_t)).Modify())
+                {
+                    KITTY_LOGE("hideLinkList: Failed to update next->l_prev.");
+                    return false;
+                }
+            }
+
+            KITTY_LOGI("hideLinkList: Removed elf(%p) from link_map list.", (void *)injected.elf.base());
+            return true;
+        }
+
+        _kMgr->readMem(trav + lm_next_off, &trav, sizeof(uintptr_t));
+    }
+
+    KITTY_LOGE("hideLinkList: elf(%p) not found in link_map list.", (void *)injected.elf.base());
+    return false;
 }
 
 
